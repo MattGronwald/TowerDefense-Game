@@ -1,25 +1,26 @@
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
 
-const DESIGN_SIZE = { width: 600, height: 800 };
+const DESIGN_SIZE = { width: 960, height: 540 };
 const ASPECT_RATIO = DESIGN_SIZE.width / DESIGN_SIZE.height;
 const view = { width: DESIGN_SIZE.width, height: DESIGN_SIZE.height };
+const ACTOR_SCALE = 0.5;
 
 const ui = {
-  wave: document.getElementById('wave'),
-  coins: document.getElementById('coins'),
-  health: document.getElementById('health'),
-  startWave: document.getElementById('startWave'),
-  upgradeDamage: document.getElementById('upgradeDamage'),
-  upgradeFireRate: document.getElementById('upgradeFireRate'),
-  upgradeRange: document.getElementById('upgradeRange'),
-  log: document.getElementById('eventLog')
+  wave: document.getElementById("wave"),
+  coins: document.getElementById("coins"),
+  health: document.getElementById("health"),
+  nextWave: document.getElementById("nextWave"),
+  upgradeDamage: document.getElementById("upgradeDamage"),
+  upgradeFireRate: document.getElementById("upgradeFireRate"),
+  upgradeRange: document.getElementById("upgradeRange"),
+  log: document.getElementById("eventLog"),
 };
 
 const base = {
   x: view.width / 2,
-  y: view.height - 90,
-  radius: 48
+  y: view.height / 2,
+  radius: 54,
 };
 
 const state = {
@@ -28,28 +29,44 @@ const state = {
   health: 20,
   enemies: [],
   projectiles: [],
+  shockwaves: [],
   spawnQueue: [],
   waveActive: false,
   gameOver: false,
-  passiveIncome: 4,
+  passiveIncome: 5,
   tower: {
     fireCooldown: 0,
     damage: 12,
-    fireRate: 1.25,
-    range: 220
-  }
+    fireRate: 1.3,
+    range: 160,
+    laserAngle: 0,
+    shockwaveTimer: 4,
+  },
+  waveCooldown: 2,
 };
 
 const towerUpgrades = {
   damage: 0,
   fireRate: 0,
-  range: 0
+  range: 0,
 };
 
 const upgradeDefs = {
-  damage: { baseCost: 35, growth: 1.45, description: 'Increase projectile damage by 4.' },
-  fireRate: { baseCost: 40, growth: 1.4, description: 'Shoot faster by +15% fire rate.' },
-  range: { baseCost: 30, growth: 1.35, description: 'Extend tower targeting radius by 12px.' }
+  damage: {
+    baseCost: 35,
+    growth: 1.45,
+    description: "Increase all attack damage by 4.",
+  },
+  fireRate: {
+    baseCost: 40,
+    growth: 1.4,
+    description: "Boost cadence (+15% fire rate & beam speed).",
+  },
+  range: {
+    baseCost: 30,
+    growth: 1.35,
+    description: "Extend tower attack radius by 6px.",
+  },
 };
 
 let logEntries = [];
@@ -65,30 +82,82 @@ function scaleMetric(value) {
   return value * currentScale();
 }
 
+function actorMetric(value) {
+  return scaleMetric(value * ACTOR_SCALE);
+}
+
 function updateBaseMetrics() {
   base.x = view.width / 2;
-  base.y = view.height - scaleMetric(90);
-  base.radius = scaleMetric(48);
+  base.y = view.height / 2;
+  base.radius = actorMetric(54);
+}
+
+function normalizeAngle(angle) {
+  let theta = angle;
+  while (theta > Math.PI) theta -= Math.PI * 2;
+  while (theta < -Math.PI) theta += Math.PI * 2;
+  return theta;
+}
+
+function handleEnemyKill(enemy, { source = "Tower", log = true } = {}) {
+  state.coins += enemy.reward;
+  if (log) {
+    logEvent(
+      `${source} destroyed tier ${enemy.tier} enemy (+${enemy.reward}).`,
+    );
+  }
+  const idx = state.enemies.indexOf(enemy);
+  if (idx >= 0) state.enemies.splice(idx, 1);
 }
 
 function recalcTowerStats() {
   state.tower.damage = 12 + towerUpgrades.damage * 4;
-  state.tower.fireRate = 1.25 * (1 + towerUpgrades.fireRate * 0.15);
-  const rangeBase = 220 + towerUpgrades.range * 12;
-  state.tower.range = scaleMetric(rangeBase);
+  state.tower.fireRate = 1.3 * (1 + towerUpgrades.fireRate * 0.15);
+  const rangeBase = 250 + towerUpgrades.range * 10;
+  state.tower.range = actorMetric(rangeBase);
+  const shockwaveInterval = getShockwaveInterval();
+  if (!Number.isFinite(state.tower.shockwaveTimer)) {
+    state.tower.shockwaveTimer = shockwaveInterval;
+  } else {
+    state.tower.shockwaveTimer = Math.min(
+      state.tower.shockwaveTimer,
+      shockwaveInterval,
+    );
+  }
+}
+
+function getLaserRotationSpeed() {
+  return state.tower.fireRate * 0.08;
+}
+
+function getLaserDamagePerSecond() {
+  return state.tower.damage * 1.1;
+}
+
+function getShockwaveInterval() {
+  return Math.max(2.5, 6 - towerUpgrades.fireRate * 0.4);
+}
+
+function getShockwaveStunDuration() {
+  return 1.2 + towerUpgrades.damage * 0.1;
 }
 
 function logEvent(message) {
-  const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const timestamp = new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
   logEntries.unshift(`[${timestamp}] ${message}`);
   logEntries = logEntries.slice(0, 10);
-  ui.log.innerHTML = logEntries.map((entry) => `<p>${entry}</p>`).join('');
+  ui.log.innerHTML = logEntries.map((entry) => `<p>${entry}</p>`).join("");
 }
 
 class Enemy {
   constructor(tier) {
     this.id = ++enemyIdSeed;
-    this.radius = scaleMetric(18);
+    this.radius = actorMetric(18 + tier * 2);
+    this.stun = 0;
     this.spawn(tier);
   }
 
@@ -101,11 +170,16 @@ class Enemy {
     this.damage = stats.damage;
     this.color = stats.color;
     this.tier = tier;
-    this.x = scaleMetric(80) + Math.random() * (view.width - scaleMetric(160));
-    this.y = -this.radius;
+    const { x, y } = spawnEdgePosition(this.radius);
+    this.x = x;
+    this.y = y;
   }
 
   update(delta) {
+    if (this.stun > 0) {
+      this.stun = Math.max(0, this.stun - delta);
+      return false;
+    }
     const dx = base.x - this.x;
     const dy = base.y - this.y;
     const dist = Math.hypot(dx, dy) || 1;
@@ -119,31 +193,68 @@ class Enemy {
     this.health -= amount;
     return this.health <= 0;
   }
+
+  applyStun(duration) {
+    this.stun = Math.max(this.stun, duration);
+  }
+}
+
+function spawnEdgePosition(radius) {
+  const side = Math.floor(Math.random() * 4);
+  switch (side) {
+    case 0: // top
+      return { x: Math.random() * view.width, y: -radius };
+    case 1: // right
+      return { x: view.width + radius, y: Math.random() * view.height };
+    case 2: // bottom
+      return { x: Math.random() * view.width, y: view.height + radius };
+    default: // left
+      return { x: -radius, y: Math.random() * view.height };
+  }
 }
 
 function enemyStats(tier) {
-  const factor = 1 + (state.wave - 1) * 0.08;
+  const healthFactor = 1 + (state.wave - 1) * 0.08;
+  const speedFactor = 1 + (state.wave - 1) * 0.02;
   const tiers = {
-    1: { health: 35 * factor, speed: 42, reward: 6, damage: 1, color: '#72f1b8' },
-    2: { health: 80 * factor, speed: 32, reward: 12, damage: 2, color: '#42c3ff' },
-    3: { health: 220 * factor, speed: 24, reward: 30, damage: 5, color: '#f39b45' }
+    1: {
+      health: 35 * healthFactor,
+      speed: 32 * speedFactor,
+      reward: 6,
+      damage: 1,
+      color: "#72f1b8",
+    },
+    2: {
+      health: 110 * healthFactor,
+      speed: 24 * speedFactor,
+      reward: 15,
+      damage: 2,
+      color: "#42c3ff",
+    },
+    3: {
+      health: 280 * healthFactor,
+      speed: 18 * speedFactor,
+      reward: 35,
+      damage: 5,
+      color: "#f39b45",
+    },
   };
   return tiers[tier] || tiers[1];
 }
 
 function queueWave(wave) {
-  const enemyTotal = Math.min(38, 6 + wave * 3);
-  const cadence = Math.max(0.25, 1.1 - wave * 0.03);
+  const enemyTotal = Math.min(42, 8 + wave * 3);
+  const cadence = Math.max(0.2, 1.1 - wave * 0.03);
   const queue = [];
   for (let i = 0; i < enemyTotal; i += 1) {
     let tier = 1;
     if (wave > 4 && i % 5 === 0) tier = 2;
-    if (wave % 6 === 0 && i === enemyTotal - 1) tier = 3;
+    if (wave % 6 === 0 && i >= enemyTotal - 2) tier = 3;
     queue.push({ delay: i * cadence, tier });
   }
   state.spawnQueue = queue;
   state.waveActive = true;
-  logEvent(`Wave ${wave} inbound with ${enemyTotal} enemies.`);
+  logEvent(`Wave ${wave} incoming from every direction (${enemyTotal} units).`);
 }
 
 function spawnReady(delta) {
@@ -162,18 +273,14 @@ function tryEndWave() {
   if (!state.waveActive) return;
   if (state.spawnQueue.length === 0 && state.enemies.length === 0) {
     state.waveActive = false;
-    const bonus = Math.round(25 + state.wave * 6 + towerUpgrades.damage * 2);
+    const bonus = Math.round(25 + state.wave * 8 + towerUpgrades.damage * 2);
     state.coins += bonus;
     logEvent(`Wave ${state.wave} cleared. Bonus +${bonus} coins.`);
     state.wave += 1;
     state.coins += state.passiveIncome;
+    state.waveCooldown = 3.5;
+    logEvent("Charging the next wave...");
   }
-}
-
-function startWave() {
-  if (state.waveActive || state.gameOver) return;
-  queueWave(state.wave);
-  updateUI();
 }
 
 function purchaseUpgrade(name) {
@@ -184,7 +291,7 @@ function purchaseUpgrade(name) {
   state.coins -= cost;
   towerUpgrades[name] += 1;
   recalcTowerStats();
-  logEvent(`${name} upgraded to level ${towerUpgrades[name]}.`);
+  logEvent(`${capitalize(name)} upgraded to level ${towerUpgrades[name]}.`);
   updateUI();
 }
 
@@ -215,11 +322,81 @@ function acquireTarget() {
 function shoot(target) {
   state.projectiles.push({
     x: base.x,
-    y: base.y - scaleMetric(20),
+    y: base.y,
     target,
-    speed: 520 * currentScale(),
+    speed: 560 * currentScale(),
     damage: state.tower.damage,
-    radius: scaleMetric(5)
+    radius: actorMetric(5),
+  });
+}
+
+function updateLaser(delta) {
+  state.tower.laserAngle =
+    (state.tower.laserAngle + getLaserRotationSpeed() * delta * Math.PI * 2) %
+    (Math.PI * 2);
+  const beamHalfWidth = 0.25;
+  const damagePerSecond = getLaserDamagePerSecond();
+  for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
+    const enemy = state.enemies[i];
+    const dx = enemy.x - base.x;
+    const dy = enemy.y - base.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > Math.max(view.width, view.height) * 1.5 + enemy.radius) continue;
+    const angleToEnemy = Math.atan2(dy, dx);
+    const diff = Math.abs(
+      normalizeAngle(angleToEnemy - state.tower.laserAngle),
+    );
+    if (diff <= beamHalfWidth) {
+      const killed = enemy.takeDamage(damagePerSecond * delta);
+      if (killed) {
+        handleEnemyKill(enemy, { source: "Laser", log: false });
+      }
+    }
+  }
+}
+
+function emitShockwave() {
+  const wave = {
+    life: 0,
+    duration: 0.65,
+    maxRadius: state.tower.range,
+  };
+  state.shockwaves.push(wave);
+  const stunDuration = getShockwaveStunDuration();
+  let stunned = 0;
+  for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
+    const enemy = state.enemies[i];
+    const dist = Math.hypot(enemy.x - base.x, enemy.y - base.y);
+    if (dist <= state.tower.range + enemy.radius) {
+      stunned += 1;
+      const falloff = 1 - Math.min(1, dist / state.tower.range);
+      const effectiveStun = stunDuration * (0.45 + falloff * 0.55);
+      enemy.applyStun(effectiveStun);
+      const damage = state.tower.damage * (0.8 + falloff * 0.6);
+      const killed = enemy.takeDamage(damage);
+      if (killed) {
+        handleEnemyKill(enemy, { source: "Shockwave", log: false });
+      }
+    }
+  }
+  if (stunned > 0) {
+    logEvent("Shockwave released! Nearby enemies are stunned.");
+  }
+}
+
+function updateShockwave(delta) {
+  if (state.gameOver) {
+    state.shockwaves.length = 0;
+    return;
+  }
+  state.tower.shockwaveTimer -= delta;
+  if (state.tower.shockwaveTimer <= 0) {
+    state.tower.shockwaveTimer += getShockwaveInterval();
+    emitShockwave();
+  }
+  state.shockwaves = state.shockwaves.filter((wave) => {
+    wave.life += delta;
+    return wave.life < wave.duration;
   });
 }
 
@@ -239,11 +416,7 @@ function updateProjectiles(delta) {
       const kill = projectile.target.takeDamage(projectile.damage);
       state.projectiles.splice(i, 1);
       if (kill) {
-        const reward = projectile.target.reward;
-        state.coins += reward;
-        logEvent(`Destroyed tier ${projectile.target.tier} enemy (+${reward}).`);
-        const idx = state.enemies.indexOf(projectile.target);
-        if (idx >= 0) state.enemies.splice(idx, 1);
+        handleEnemyKill(projectile.target, { source: "Projectile" });
       }
     }
   }
@@ -260,7 +433,7 @@ function updateEnemies(delta) {
       if (state.health <= 0) {
         state.health = 0;
         state.gameOver = true;
-        logEvent('The tower has fallen. Refresh to try again.');
+        logEvent("The tower has fallen. Refresh to try again.");
         state.waveActive = false;
         state.spawnQueue = [];
         break;
@@ -269,19 +442,40 @@ function updateEnemies(delta) {
   }
 }
 
+function updateWaveTimer(delta) {
+  if (state.gameOver || state.waveActive) return;
+  state.waveCooldown -= delta;
+  if (state.waveCooldown <= 0) {
+    state.waveCooldown = 0;
+    queueWave(state.wave);
+  }
+}
+
 function updateUI() {
   ui.wave.textContent = state.wave;
   ui.coins.textContent = Math.floor(state.coins);
   ui.health.textContent = state.health;
-  ui.startWave.disabled = state.waveActive || state.gameOver;
+  if (ui.nextWave) {
+    if (state.gameOver) {
+      ui.nextWave.textContent = "Tower destroyed";
+    } else if (state.waveActive) {
+      ui.nextWave.textContent = `Wave ${state.wave} in progress`;
+    } else if (state.waveCooldown > 0) {
+      ui.nextWave.textContent = `Next wave in ${state.waveCooldown.toFixed(1)}s`;
+    } else {
+      ui.nextWave.textContent = "Wave arriving...";
+    }
+  }
   const buttonMap = [
-    ['damage', ui.upgradeDamage],
-    ['fireRate', ui.upgradeFireRate],
-    ['range', ui.upgradeRange]
+    ["damage", ui.upgradeDamage],
+    ["fireRate", ui.upgradeFireRate],
+    ["range", ui.upgradeRange],
   ];
   buttonMap.forEach(([name, element]) => {
     const level = towerUpgrades[name];
-    const cost = Math.round(upgradeDefs[name].baseCost * Math.pow(upgradeDefs[name].growth, level));
+    const cost = Math.round(
+      upgradeDefs[name].baseCost * Math.pow(upgradeDefs[name].growth, level),
+    );
     element.textContent = `${capitalize(name)} (Lv.${level}) - ${cost}c`;
     element.disabled = state.coins < cost || state.gameOver;
   });
@@ -293,14 +487,20 @@ function capitalize(text) {
 
 function drawBackground() {
   const gradient = ctx.createLinearGradient(0, 0, 0, view.height);
-  gradient.addColorStop(0, '#091224');
-  gradient.addColorStop(1, '#02040a');
+  gradient.addColorStop(0, "#050c18");
+  gradient.addColorStop(1, "#01030a");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, view.width, view.height);
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-  const step = Math.max(30, scaleMetric(40));
-  for (let y = 0; y < view.height; y += step) {
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.02)";
+  const spacing = Math.max(40, scaleMetric(48));
+  for (let x = 0; x < view.width; x += spacing) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, view.height);
+    ctx.stroke();
+  }
+  for (let y = 0; y < view.height; y += spacing) {
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(view.width, y);
@@ -308,17 +508,30 @@ function drawBackground() {
   }
 }
 
+function drawShockwaves() {
+  state.shockwaves.forEach((wave) => {
+    const progress = Math.min(1, wave.life / wave.duration);
+    const radius = base.radius + wave.maxRadius * progress;
+    const alpha = 0.5 * (1 - progress);
+    ctx.strokeStyle = `rgba(120, 220, 255, ${alpha})`;
+    ctx.lineWidth = Math.max(1, actorMetric(6) * (1 - progress));
+    ctx.beginPath();
+    ctx.arc(base.x, base.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+}
+
 function drawBase() {
   ctx.save();
-  ctx.shadowColor = '#00d5ff';
-  ctx.shadowBlur = 20;
-  ctx.fillStyle = '#0f6a8f';
+  ctx.shadowColor = "#02e0ff";
+  ctx.shadowBlur = 25;
+  ctx.fillStyle = "#128fb3";
   ctx.beginPath();
   ctx.arc(base.x, base.y, base.radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  ctx.strokeStyle = 'rgba(17, 210, 255, 0.3)';
+  ctx.strokeStyle = "rgba(2, 224, 255, 0.25)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.arc(base.x, base.y, state.tower.range, 0, Math.PI * 2);
@@ -333,21 +546,33 @@ function drawEnemies() {
     ctx.fill();
 
     const barWidth = enemy.radius * 2;
-    const barHeight = Math.max(4, scaleMetric(4));
-    ctx.fillStyle = '#111523';
-    ctx.fillRect(enemy.x - enemy.radius, enemy.y - enemy.radius - scaleMetric(8), barWidth, barHeight);
-    ctx.fillStyle = '#4dfcb8';
+    const barHeight = Math.max(3, actorMetric(4));
+    ctx.fillStyle = "#111523";
     ctx.fillRect(
       enemy.x - enemy.radius,
-      enemy.y - enemy.radius - scaleMetric(8),
-      barWidth * (enemy.health / enemy.maxHealth),
-      barHeight
+      enemy.y - enemy.radius - actorMetric(10),
+      barWidth,
+      barHeight,
     );
+    ctx.fillStyle = "#4dfcb8";
+    ctx.fillRect(
+      enemy.x - enemy.radius,
+      enemy.y - enemy.radius - actorMetric(10),
+      barWidth * (enemy.health / enemy.maxHealth),
+      barHeight,
+    );
+    if (enemy.stun > 0) {
+      ctx.strokeStyle = "rgba(193, 172, 255, 0.85)";
+      ctx.lineWidth = Math.max(1, actorMetric(4));
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, enemy.radius + actorMetric(5), 0, Math.PI * 2);
+      ctx.stroke();
+    }
   });
 }
 
 function drawProjectiles() {
-  ctx.fillStyle = '#f8e45c';
+  ctx.fillStyle = "#f8e45c";
   state.projectiles.forEach((projectile) => {
     ctx.beginPath();
     ctx.arc(projectile.x, projectile.y, projectile.radius, 0, Math.PI * 2);
@@ -355,33 +580,65 @@ function drawProjectiles() {
   });
 }
 
+function drawLaser() {
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 99, 133, 0.85)";
+  ctx.lineWidth = Math.max(1.5, actorMetric(4));
+  ctx.shadowColor = "#ff6391";
+  ctx.shadowBlur = 15;
+  ctx.beginPath();
+  ctx.moveTo(base.x, base.y);
+  ctx.lineTo(
+    base.x + Math.cos(state.tower.laserAngle) * view.width * 2,
+    base.y + Math.sin(state.tower.laserAngle) * view.width * 2,
+  );
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawHUD() {
   const scale = currentScale();
   if (state.gameOver) {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
     ctx.fillRect(0, 0, view.width, view.height);
-    ctx.fillStyle = '#f9fafc';
+    ctx.fillStyle = "#f9fafc";
     ctx.font = `bold ${Math.max(28, 36 * scale)}px "Inter", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('Tower Destroyed', view.width / 2, view.height / 2 - scaleMetric(20));
+    ctx.textAlign = "center";
+    ctx.fillText(
+      "Tower Destroyed",
+      view.width / 2,
+      view.height / 2 - scaleMetric(20),
+    );
     ctx.font = `${Math.max(16, 20 * scale)}px "Inter", sans-serif`;
-    ctx.fillText('Refresh to restart your defense.', view.width / 2, view.height / 2 + scaleMetric(20));
+    ctx.fillText(
+      "Refresh to restart your defense.",
+      view.width / 2,
+      view.height / 2 + scaleMetric(20),
+    );
   } else if (!state.waveActive) {
-    const pad = scaleMetric(50);
-    const hudHeight = scaleMetric(80);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-    ctx.fillRect(pad, view.height - hudHeight - pad, view.width - pad * 2, hudHeight);
-    ctx.fillStyle = '#dce8ff';
+    const pad = scaleMetric(36);
+    const msgWidth = Math.min(view.width - pad * 2, scaleMetric(620));
+    const msgHeight = scaleMetric(60);
+    const msgX = (view.width - msgWidth) / 2;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.fillRect(msgX, pad, msgWidth, msgHeight);
+    ctx.fillStyle = "#dce8ff";
     ctx.font = `${Math.max(16, 20 * scale)}px "Inter", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('Press Start Wave to send the next assault.', view.width / 2, view.height - pad - hudHeight / 2);
+    ctx.textAlign = "center";
+    ctx.fillText(
+      "Hold position—next 360° assault arrives automatically.",
+      view.width / 2,
+      pad + msgHeight / 2 + 6,
+    );
   }
 }
 
 function render() {
   drawBackground();
+  drawShockwaves();
   drawBase();
   drawEnemies();
+  drawLaser();
   drawProjectiles();
   drawHUD();
 }
@@ -392,6 +649,9 @@ function update(delta) {
   updateEnemies(delta);
   updateProjectiles(delta);
   updateTower(delta);
+  updateLaser(delta);
+  updateShockwave(delta);
+  updateWaveTimer(delta);
   tryEndWave();
 }
 
@@ -405,11 +665,9 @@ function loop(now) {
 }
 
 function resizeCanvas() {
-  const hud = document.querySelector('.hud');
-  const hudWidth = hud ? hud.offsetWidth : 320;
-  const availableWidth = Math.max(340, window.innerWidth - hudWidth - 80);
-  const availableHeight = Math.max(520, window.innerHeight - 120);
-  let width = Math.min(availableWidth, 900);
+  const availableWidth = Math.max(420, window.innerWidth - 80);
+  const availableHeight = Math.max(320, window.innerHeight - 220);
+  let width = Math.min(availableWidth, 1100);
   let height = width / ASPECT_RATIO;
   if (height > availableHeight) {
     height = availableHeight;
@@ -449,12 +707,11 @@ function resizeCanvas() {
   recalcTowerStats();
 }
 
-ui.startWave.addEventListener('click', startWave);
-ui.upgradeDamage.addEventListener('click', () => purchaseUpgrade('damage'));
-ui.upgradeFireRate.addEventListener('click', () => purchaseUpgrade('fireRate'));
-ui.upgradeRange.addEventListener('click', () => purchaseUpgrade('range'));
+ui.upgradeDamage.addEventListener("click", () => purchaseUpgrade("damage"));
+ui.upgradeFireRate.addEventListener("click", () => purchaseUpgrade("fireRate"));
+ui.upgradeRange.addEventListener("click", () => purchaseUpgrade("range"));
 
-window.addEventListener('resize', () => {
+window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(resizeCanvas, 100);
 });
@@ -462,5 +719,7 @@ window.addEventListener('resize', () => {
 resizeCanvas();
 recalcTowerStats();
 updateUI();
-logEvent('Welcome, Defender! Upgrade your tower and start the first wave.');
+logEvent(
+  "Welcome! Auto-waves, rotating lasers, and shockwaves are online—upgrade wisely.",
+);
 requestAnimationFrame(loop);
