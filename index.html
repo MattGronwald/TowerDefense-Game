@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tower Defense Prototype</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hud">
+        <h1>The Tower: Defense Prototype</h1>
+        <div class="stats">
+          <div>Wave: <span id="wave">1</span></div>
+          <div>Coins: <span id="coins">0</span></div>
+          <div>Health: <span id="health">20</span></div>
+        </div>
+        <div class="controls">
+          <button id="startWave">Start Wave</button>
+          <button id="upgradeDamage">Upgrade Damage (+)</button>
+          <button id="upgradeFireRate">Upgrade Fire Rate (+)</button>
+          <button id="upgradeRange">Upgrade Range (+)</button>
+        </div>
+        <div class="log" id="eventLog"></div>
+      </section>
+      <section class="game">
+        <canvas id="gameCanvas" width="600" height="800"></canvas>
+      </section>
+    </main>
+    <script defer src="./src/main.js"></script>
+  </body>
+</html>
