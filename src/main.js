@@ -6,6 +6,111 @@ const ASPECT_RATIO = DESIGN_SIZE.width / DESIGN_SIZE.height;
 const view = { width: DESIGN_SIZE.width, height: DESIGN_SIZE.height };
 const ACTOR_SCALE = 0.5;
 
+const STARTING_STATE = {
+  coins: 120,
+  wave: 1,
+  health: 20,
+  passiveIncome: 5,
+  waveCooldown: 2,
+  initialShockwaveTimer: 4,
+};
+
+const BASE_CONFIG = {
+  radius: 54,
+};
+
+const TOWER_STATS = {
+  baseDamage: 12,
+  damagePerUpgrade: 4,
+  baseFireRate: 1.3,
+  fireRatePerUpgrade: 0.15,
+  baseRange: 250,
+  rangePerUpgrade: 10,
+  projectileSpeed: 560,
+  projectileRadius: 5,
+  laserRotationSpeedFactor: 0.08,
+  laserDamageMultiplier: 1.1,
+  laserBeamHalfWidth: 0.25,
+  laserMaxRangeMultiplier: 1.5,
+};
+
+const SHOCKWAVE_CONFIG = {
+  duration: 0.65,
+  minInterval: 2.5,
+  baseInterval: 6,
+  fireRateIntervalReduction: 0.4,
+  stunBaseRatio: 0.45,
+  stunBonusRatio: 0.55,
+  damageBaseRatio: 0.8,
+  damageBonusRatio: 0.6,
+  stunDurationBase: 1.2,
+  stunDurationPerDamageUpgrade: 0.1,
+};
+
+const ENEMY_SCALING = {
+  radiusBase: 18,
+  radiusPerTier: 2,
+  healthPerWave: 0.08,
+  speedPerWave: 0.02,
+};
+
+const ENEMY_BASE_STATS = {
+  1: {
+    health: 35,
+    speed: 32,
+    reward: 6,
+    damage: 1,
+    color: '#72f1b8',
+  },
+  2: {
+    health: 110,
+    speed: 24,
+    reward: 15,
+    damage: 2,
+    color: '#42c3ff',
+  },
+  3: {
+    health: 280,
+    speed: 18,
+    reward: 35,
+    damage: 5,
+    color: '#f39b45',
+  },
+};
+
+const WAVE_QUEUE_CONFIG = {
+  baseEnemies: 8,
+  enemiesPerWave: 3,
+  maxEnemies: 42,
+  cadenceBase: 1.1,
+  cadenceReductionPerWave: 0.03,
+  minCadence: 0.2,
+  tierTwoWaveThreshold: 4,
+  tierTwoSpacing: 5,
+  tierThreeInterval: 6,
+  tierThreeTailCount: 2,
+};
+
+const WAVE_REWARD_CONFIG = {
+  baseBonus: 25,
+  perWave: 8,
+  perDamageUpgrade: 2,
+  cooldown: 3.5,
+};
+
+const SPAWN_SIDE_COUNT = 4;
+const PROJECTILE_HIT_FUDGE = 1;
+const MAX_LOG_ENTRIES = 10;
+const MAX_FRAME_TIME = 0.1;
+const RESIZE_DEBOUNCE_MS = 100;
+const CANVAS_LIMITS = {
+  minWidth: 420,
+  widthPadding: 80,
+  maxWidth: 1100,
+  minHeight: 320,
+  heightPadding: 220,
+};
+
 const ui = {
   wave: document.getElementById("wave"),
   coins: document.getElementById("coins"),
@@ -20,29 +125,29 @@ const ui = {
 const base = {
   x: view.width / 2,
   y: view.height / 2,
-  radius: 54,
+  radius: actorMetric(BASE_CONFIG.radius),
 };
 
 const state = {
-  coins: 120,
-  wave: 1,
-  health: 20,
+  coins: STARTING_STATE.coins,
+  wave: STARTING_STATE.wave,
+  health: STARTING_STATE.health,
   enemies: [],
   projectiles: [],
   shockwaves: [],
   spawnQueue: [],
   waveActive: false,
   gameOver: false,
-  passiveIncome: 5,
+  passiveIncome: STARTING_STATE.passiveIncome,
   tower: {
     fireCooldown: 0,
-    damage: 12,
-    fireRate: 1.3,
-    range: 160,
+    damage: TOWER_STATS.baseDamage,
+    fireRate: TOWER_STATS.baseFireRate,
+    range: actorMetric(TOWER_STATS.baseRange),
     laserAngle: 0,
-    shockwaveTimer: 4,
+    shockwaveTimer: STARTING_STATE.initialShockwaveTimer,
   },
-  waveCooldown: 2,
+  waveCooldown: STARTING_STATE.waveCooldown,
 };
 
 const towerUpgrades = {
@@ -89,7 +194,7 @@ function actorMetric(value) {
 function updateBaseMetrics() {
   base.x = view.width / 2;
   base.y = view.height / 2;
-  base.radius = actorMetric(54);
+  base.radius = actorMetric(BASE_CONFIG.radius);
 }
 
 function normalizeAngle(angle) {
@@ -111,9 +216,13 @@ function handleEnemyKill(enemy, { source = "Tower", log = true } = {}) {
 }
 
 function recalcTowerStats() {
-  state.tower.damage = 12 + towerUpgrades.damage * 4;
-  state.tower.fireRate = 1.3 * (1 + towerUpgrades.fireRate * 0.15);
-  const rangeBase = 250 + towerUpgrades.range * 10;
+  state.tower.damage =
+    TOWER_STATS.baseDamage + towerUpgrades.damage * TOWER_STATS.damagePerUpgrade;
+  state.tower.fireRate =
+    TOWER_STATS.baseFireRate *
+    (1 + towerUpgrades.fireRate * TOWER_STATS.fireRatePerUpgrade);
+  const rangeBase =
+    TOWER_STATS.baseRange + towerUpgrades.range * TOWER_STATS.rangePerUpgrade;
   state.tower.range = actorMetric(rangeBase);
   const shockwaveInterval = getShockwaveInterval();
   if (!Number.isFinite(state.tower.shockwaveTimer)) {
@@ -127,19 +236,26 @@ function recalcTowerStats() {
 }
 
 function getLaserRotationSpeed() {
-  return state.tower.fireRate * 0.08;
+  return state.tower.fireRate * TOWER_STATS.laserRotationSpeedFactor;
 }
 
 function getLaserDamagePerSecond() {
-  return state.tower.damage * 1.1;
+  return state.tower.damage * TOWER_STATS.laserDamageMultiplier;
 }
 
 function getShockwaveInterval() {
-  return Math.max(2.5, 6 - towerUpgrades.fireRate * 0.4);
+  return Math.max(
+    SHOCKWAVE_CONFIG.minInterval,
+    SHOCKWAVE_CONFIG.baseInterval -
+      towerUpgrades.fireRate * SHOCKWAVE_CONFIG.fireRateIntervalReduction,
+  );
 }
 
 function getShockwaveStunDuration() {
-  return 1.2 + towerUpgrades.damage * 0.1;
+  return (
+    SHOCKWAVE_CONFIG.stunDurationBase +
+    towerUpgrades.damage * SHOCKWAVE_CONFIG.stunDurationPerDamageUpgrade
+  );
 }
 
 function logEvent(message) {
@@ -149,14 +265,16 @@ function logEvent(message) {
     second: "2-digit",
   });
   logEntries.unshift(`[${timestamp}] ${message}`);
-  logEntries = logEntries.slice(0, 10);
+  logEntries = logEntries.slice(0, MAX_LOG_ENTRIES);
   ui.log.innerHTML = logEntries.map((entry) => `<p>${entry}</p>`).join("");
 }
 
 class Enemy {
   constructor(tier) {
     this.id = ++enemyIdSeed;
-    this.radius = actorMetric(18 + tier * 2);
+    this.radius = actorMetric(
+      ENEMY_SCALING.radiusBase + tier * ENEMY_SCALING.radiusPerTier,
+    );
     this.stun = 0;
     this.spawn(tier);
   }
@@ -200,7 +318,7 @@ class Enemy {
 }
 
 function spawnEdgePosition(radius) {
-  const side = Math.floor(Math.random() * 4);
+  const side = Math.floor(Math.random() * SPAWN_SIDE_COUNT);
   switch (side) {
     case 0: // top
       return { x: Math.random() * view.width, y: -radius };
@@ -214,42 +332,42 @@ function spawnEdgePosition(radius) {
 }
 
 function enemyStats(tier) {
-  const healthFactor = 1 + (state.wave - 1) * 0.08;
-  const speedFactor = 1 + (state.wave - 1) * 0.02;
-  const tiers = {
-    1: {
-      health: 35 * healthFactor,
-      speed: 32 * speedFactor,
-      reward: 6,
-      damage: 1,
-      color: "#72f1b8",
-    },
-    2: {
-      health: 110 * healthFactor,
-      speed: 24 * speedFactor,
-      reward: 15,
-      damage: 2,
-      color: "#42c3ff",
-    },
-    3: {
-      health: 280 * healthFactor,
-      speed: 18 * speedFactor,
-      reward: 35,
-      damage: 5,
-      color: "#f39b45",
-    },
+  const healthFactor = 1 + (state.wave - 1) * ENEMY_SCALING.healthPerWave;
+  const speedFactor = 1 + (state.wave - 1) * ENEMY_SCALING.speedPerWave;
+  const baseStats = ENEMY_BASE_STATS[tier] || ENEMY_BASE_STATS[1];
+  return {
+    health: baseStats.health * healthFactor,
+    speed: baseStats.speed * speedFactor,
+    reward: baseStats.reward,
+    damage: baseStats.damage,
+    color: baseStats.color,
   };
-  return tiers[tier] || tiers[1];
 }
 
 function queueWave(wave) {
-  const enemyTotal = Math.min(42, 8 + wave * 3);
-  const cadence = Math.max(0.2, 1.1 - wave * 0.03);
+  const enemyTotal = Math.min(
+    WAVE_QUEUE_CONFIG.maxEnemies,
+    WAVE_QUEUE_CONFIG.baseEnemies + wave * WAVE_QUEUE_CONFIG.enemiesPerWave,
+  );
+  const cadence = Math.max(
+    WAVE_QUEUE_CONFIG.minCadence,
+    WAVE_QUEUE_CONFIG.cadenceBase - wave * WAVE_QUEUE_CONFIG.cadenceReductionPerWave,
+  );
   const queue = [];
   for (let i = 0; i < enemyTotal; i += 1) {
     let tier = 1;
-    if (wave > 4 && i % 5 === 0) tier = 2;
-    if (wave % 6 === 0 && i >= enemyTotal - 2) tier = 3;
+    if (
+      wave > WAVE_QUEUE_CONFIG.tierTwoWaveThreshold &&
+      i % WAVE_QUEUE_CONFIG.tierTwoSpacing === 0
+    ) {
+      tier = 2;
+    }
+    if (
+      wave % WAVE_QUEUE_CONFIG.tierThreeInterval === 0 &&
+      i >= enemyTotal - WAVE_QUEUE_CONFIG.tierThreeTailCount
+    ) {
+      tier = 3;
+    }
     queue.push({ delay: i * cadence, tier });
   }
   state.spawnQueue = queue;
@@ -273,12 +391,16 @@ function tryEndWave() {
   if (!state.waveActive) return;
   if (state.spawnQueue.length === 0 && state.enemies.length === 0) {
     state.waveActive = false;
-    const bonus = Math.round(25 + state.wave * 8 + towerUpgrades.damage * 2);
+    const bonus = Math.round(
+      WAVE_REWARD_CONFIG.baseBonus +
+        state.wave * WAVE_REWARD_CONFIG.perWave +
+        towerUpgrades.damage * WAVE_REWARD_CONFIG.perDamageUpgrade,
+    );
     state.coins += bonus;
     logEvent(`Wave ${state.wave} cleared. Bonus +${bonus} coins.`);
     state.wave += 1;
     state.coins += state.passiveIncome;
-    state.waveCooldown = 3.5;
+    state.waveCooldown = WAVE_REWARD_CONFIG.cooldown;
     logEvent("Charging the next wave...");
   }
 }
@@ -324,9 +446,9 @@ function shoot(target) {
     x: base.x,
     y: base.y,
     target,
-    speed: 560 * currentScale(),
+    speed: TOWER_STATS.projectileSpeed * currentScale(),
     damage: state.tower.damage,
-    radius: actorMetric(5),
+    radius: actorMetric(TOWER_STATS.projectileRadius),
   });
 }
 
@@ -334,14 +456,20 @@ function updateLaser(delta) {
   state.tower.laserAngle =
     (state.tower.laserAngle + getLaserRotationSpeed() * delta * Math.PI * 2) %
     (Math.PI * 2);
-  const beamHalfWidth = 0.25;
+  const beamHalfWidth = TOWER_STATS.laserBeamHalfWidth;
   const damagePerSecond = getLaserDamagePerSecond();
   for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
     const enemy = state.enemies[i];
     const dx = enemy.x - base.x;
     const dy = enemy.y - base.y;
     const dist = Math.hypot(dx, dy);
-    if (dist > Math.max(view.width, view.height) * 1.5 + enemy.radius) continue;
+    if (
+      dist >
+      Math.max(view.width, view.height) * TOWER_STATS.laserMaxRangeMultiplier +
+        enemy.radius
+    ) {
+      continue;
+    }
     const angleToEnemy = Math.atan2(dy, dx);
     const diff = Math.abs(
       normalizeAngle(angleToEnemy - state.tower.laserAngle),
@@ -358,7 +486,7 @@ function updateLaser(delta) {
 function emitShockwave() {
   const wave = {
     life: 0,
-    duration: 0.65,
+    duration: SHOCKWAVE_CONFIG.duration,
     maxRadius: state.tower.range,
   };
   state.shockwaves.push(wave);
@@ -370,9 +498,13 @@ function emitShockwave() {
     if (dist <= state.tower.range + enemy.radius) {
       stunned += 1;
       const falloff = 1 - Math.min(1, dist / state.tower.range);
-      const effectiveStun = stunDuration * (0.45 + falloff * 0.55);
+      const effectiveStun =
+        stunDuration *
+        (SHOCKWAVE_CONFIG.stunBaseRatio + falloff * SHOCKWAVE_CONFIG.stunBonusRatio);
       enemy.applyStun(effectiveStun);
-      const damage = state.tower.damage * (0.8 + falloff * 0.6);
+      const damage =
+        state.tower.damage *
+        (SHOCKWAVE_CONFIG.damageBaseRatio + falloff * SHOCKWAVE_CONFIG.damageBonusRatio);
       const killed = enemy.takeDamage(damage);
       if (killed) {
         handleEnemyKill(enemy, { source: "Shockwave", log: false });
@@ -409,7 +541,7 @@ function updateProjectiles(delta) {
     }
     const dx = projectile.target.x - projectile.x;
     const dy = projectile.target.y - projectile.y;
-    const dist = Math.hypot(dx, dy) || 1;
+    const dist = Math.max(Math.hypot(dx, dy), PROJECTILE_HIT_FUDGE);
     projectile.x += (dx / dist) * projectile.speed * delta;
     projectile.y += (dy / dist) * projectile.speed * delta;
     if (dist < projectile.target.radius) {
@@ -656,7 +788,7 @@ function update(delta) {
 }
 
 function loop(now) {
-  const delta = Math.min((now - lastTime) / 1000, 0.1);
+  const delta = Math.min((now - lastTime) / 1000, MAX_FRAME_TIME);
   lastTime = now;
   update(delta);
   render();
@@ -665,9 +797,15 @@ function loop(now) {
 }
 
 function resizeCanvas() {
-  const availableWidth = Math.max(420, window.innerWidth - 80);
-  const availableHeight = Math.max(320, window.innerHeight - 220);
-  let width = Math.min(availableWidth, 1100);
+  const availableWidth = Math.max(
+    CANVAS_LIMITS.minWidth,
+    window.innerWidth - CANVAS_LIMITS.widthPadding,
+  );
+  const availableHeight = Math.max(
+    CANVAS_LIMITS.minHeight,
+    window.innerHeight - CANVAS_LIMITS.heightPadding,
+  );
+  let width = Math.min(availableWidth, CANVAS_LIMITS.maxWidth);
   let height = width / ASPECT_RATIO;
   if (height > availableHeight) {
     height = availableHeight;
@@ -713,7 +851,7 @@ ui.upgradeRange.addEventListener("click", () => purchaseUpgrade("range"));
 
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(resizeCanvas, 100);
+  resizeTimer = setTimeout(resizeCanvas, RESIZE_DEBOUNCE_MS);
 });
 
 resizeCanvas();
